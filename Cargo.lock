@@ -6317,6 +6317,7 @@ dependencies = [
  "futures-util",
  "hex",
  "http",
+ "itertools 0.12.1",
  "jsonrpsee 0.25.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "jsonrpsee-core 0.25.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "jsonrpsee-types 0.25.1 (registry+https://github.com/rust-lang/crates.io-index)",

@@ -121,6 +121,7 @@ http = "1.0"
 sha3 = "0.10"
 hex = "0.4"
 ureq = "2.10"
+itertools = "0.12"
 
 rollup-boost = { git = "http://github.com/flashbots/rollup-boost", branch = "main" }
 

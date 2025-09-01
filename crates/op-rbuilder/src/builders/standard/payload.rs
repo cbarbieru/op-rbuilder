@@ -34,8 +34,13 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
 };
 use revm::Database;
+use jsonrpsee::http_client::HttpClientBuilder;
+use jsonrpsee::core::client::{ClientT, Error};
 use std::{sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
+use tokio::runtime::Handle;
+use tokio::task;
+use itertools::Itertools;
 use tracing::{error, info, warn};
 
 use super::super::context::{estimate_gas_for_builder_tx, OpPayloadBuilderCtx};
@@ -264,6 +269,10 @@ where
             .next_evm_env(&config.parent_header, &block_env_attributes)
             .map_err(PayloadBuilderError::other)?;
 
+        let guarantor_client = HttpClientBuilder::default()
+            .build("http://127.0.0.1:1545")
+            .unwrap();
+        
         let ctx = OpPayloadBuilderCtx {
             evm_config: self.evm_config.clone(),
             da_config: self.config.da_config.clone(),
@@ -275,6 +284,7 @@ where
             builder_signer: self.config.builder_signer,
             metrics: self.metrics.clone(),
             extra_ctx: Default::default(),
+            guarantor_client: Some(Arc::new(guarantor_client))
         };
 
         let builder = OpBuilder::new(best);
@@ -379,7 +389,7 @@ impl<Txs: PayloadTxsBounds> OpBuilder<'_, Txs> {
         // 4. if mem pool transactions are requested we execute them
 
         // gas reserved for builder tx
-        let message = format!("Block Number: {}", ctx.block_number())
+        let message = format!("Block Number: {} W/ Expected Order: {}", ctx.block_number(), get_order(ctx))
             .as_bytes()
             .to_vec();
         let builder_tx_gas = ctx
@@ -620,4 +630,23 @@ impl<Txs: PayloadTxsBounds> OpBuilder<'_, Txs> {
             Ok(BuildOutcomeKind::Better { payload })
         }
     }
+}
+
+fn get_order(ctx: &OpPayloadBuilderCtx) -> String {
+    let hashes_result: Result<Vec<String>, Error> = task::block_in_place(|| {
+        Handle::current().block_on(async {
+            let client = ctx.guarantor_client.as_ref()
+                .ok_or(Error::Custom("Guarantor client not initialized".to_string()))?;
+    
+            let tx_hashes: Vec<String> = client
+                .as_ref()
+                .request("tog_getBestTransactionHashes", &[] as &[()])
+                .await?;
+    
+            Ok(tx_hashes)
+        })
+    });
+    let hashes = hashes_result.unwrap();
+    let joined_hashes = hashes.iter().join(", ");
+    joined_hashes
 }

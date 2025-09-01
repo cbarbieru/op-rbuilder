@@ -35,6 +35,7 @@ use reth_transaction_pool::{BestTransactionsAttributes, PoolTransaction};
 use revm::{
     context::result::ResultAndState, interpreter::as_u64_saturated, Database, DatabaseCommit,
 };
+use jsonrpsee::http_client::HttpClient;
 use std::{sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, trace, warn};
@@ -70,6 +71,8 @@ pub struct OpPayloadBuilderCtx<ExtraCtx: Debug + Default = ()> {
     pub metrics: Arc<OpRBuilderMetrics>,
     /// Extra context for the payload builder
     pub extra_ctx: ExtraCtx,
+    /// The guarantor client
+    pub guarantor_client: Option<Arc<HttpClient>>,
 }
 
 impl<ExtraCtx: Debug + Default> OpPayloadBuilderCtx<ExtraCtx> {

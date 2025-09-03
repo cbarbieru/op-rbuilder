@@ -71,8 +71,8 @@ pub struct OpPayloadBuilderCtx<ExtraCtx: Debug + Default = ()> {
     pub metrics: Arc<OpRBuilderMetrics>,
     /// Extra context for the payload builder
     pub extra_ctx: ExtraCtx,
-    /// The guarantor client
-    pub guarantor_client: Option<Arc<HttpClient>>,
+    /// The tx order guarantor client
+    pub tog_client: Option<Arc<HttpClient>>,
 }
 
 impl<ExtraCtx: Debug + Default> OpPayloadBuilderCtx<ExtraCtx> {

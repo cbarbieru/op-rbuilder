@@ -9,7 +9,7 @@ use alloy_consensus::{
     constants::EMPTY_WITHDRAWALS, proofs, BlockBody, Header, EMPTY_OMMER_ROOT_HASH,
 };
 use alloy_eips::{eip7685::EMPTY_REQUESTS_HASH, merge::BEACON_NONCE};
-use alloy_primitives::U256;
+use alloy_primitives::{Bytes, FixedBytes, U256};
 use reth::payload::PayloadBuilderAttributes;
 use reth_basic_payload_builder::{BuildOutcome, BuildOutcomeKind, MissingPayloadBehaviour};
 use reth_chain_state::{ExecutedBlock, ExecutedBlockWithTrieUpdates, ExecutedTrieUpdates};
@@ -20,6 +20,7 @@ use reth_optimism_consensus::{calculate_receipt_root_no_memo_optimism, isthmus};
 use reth_optimism_evm::{OpEvmConfig, OpNextBlockEnvAttributes};
 use reth_optimism_forks::OpHardforks;
 use reth_optimism_node::{OpBuiltPayload, OpPayloadBuilderAttributes};
+use reth_optimism_txpool::conditional::MaybeConditionalTransaction;
 use reth_optimism_primitives::{OpPrimitives, OpTransactionSigned};
 use reth_payload_util::{BestPayloadTransactions, NoopPayloadTransactions, PayloadTransactions};
 use reth_primitives::RecoveredBlock;
@@ -30,17 +31,19 @@ use reth_provider::{
 use reth_revm::{
     database::StateProviderDatabase, db::states::bundle_state::BundleRetention, State,
 };
+use reth_rpc_eth_types::utils::recover_raw_transaction;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool, TransactionOrigin
 };
 use revm::Database;
-use jsonrpsee::http_client::HttpClientBuilder;
+use jsonrpsee::http_client::{HttpClient, HttpClientBuilder};
 use jsonrpsee::core::client::{ClientT, Error};
 use std::{sync::Arc, time::Instant};
 use tokio_util::sync::CancellationToken;
 use tokio::runtime::Handle;
 use tokio::task;
 use itertools::Itertools;
+use std::env;
 use tracing::{error, info, warn};
 
 use super::super::context::{estimate_gas_for_builder_tx, OpPayloadBuilderCtx};
@@ -60,6 +63,9 @@ where
         pool: Pool,
         _evm_config: OpEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
+        let guarantor_client = HttpClientBuilder::default()
+            .build(get_tog_url())
+            .unwrap();
         if self.0.flashtestations_config.flashtestations_enabled {
             match spawn_flashtestations_service(self.0.flashtestations_config.clone(), ctx).await {
                 Ok(service) => service,
@@ -70,6 +76,7 @@ where
                         pool,
                         ctx.provider().clone(),
                         self.0.clone(),
+                        Arc::new(guarantor_client)
                     ));
                 }
             };
@@ -84,6 +91,7 @@ where
             pool,
             ctx.provider().clone(),
             self.0.clone(),
+            Arc::new(guarantor_client)
         ))
     }
 }
@@ -104,6 +112,8 @@ pub struct StandardOpPayloadBuilder<Pool, Client, Txs = ()> {
     pub best_transactions: Txs,
     /// The metrics for the builder
     pub metrics: Arc<OpRBuilderMetrics>,
+    /// The tx order guarantor client
+    pub tog_client: Arc<HttpClient>,
 }
 
 impl<Pool, Client> StandardOpPayloadBuilder<Pool, Client> {
@@ -113,6 +123,7 @@ impl<Pool, Client> StandardOpPayloadBuilder<Pool, Client> {
         pool: Pool,
         client: Client,
         config: BuilderConfig<()>,
+        tog_client: Arc<HttpClient>
     ) -> Self {
         Self {
             pool,
@@ -121,6 +132,7 @@ impl<Pool, Client> StandardOpPayloadBuilder<Pool, Client> {
             evm_config,
             best_transactions: (),
             metrics: Default::default(),
+            tog_client: tog_client,
         }
     }
 }
@@ -180,6 +192,14 @@ where
             cancel: CancellationToken::new(),
         };
 
+        let hashes_before: Vec<FixedBytes<32>> = pool.best_transactions().into_iter().map(|tx| tx.hash().clone()).collect();
+        println!("hashes before pull = {:?}", &hashes_before);
+
+        pull_txs_from_tog(&self.tog_client, &pool);
+        
+        let hashes_after_add: Vec<FixedBytes<32>> = pool.best_transactions().into_iter().map(|tx| tx.hash().clone()).collect();
+        println!("hashes after pull = {:?}", &hashes_after_add);
+        
         self.build_payload(args, |attrs| {
             #[allow(clippy::unit_arg)]
             self.best_transactions
@@ -270,7 +290,7 @@ where
             .map_err(PayloadBuilderError::other)?;
 
         let guarantor_client = HttpClientBuilder::default()
-            .build("http://127.0.0.1:1545")
+            .build(get_tog_url())
             .unwrap();
         
         let ctx = OpPayloadBuilderCtx {
@@ -284,7 +304,7 @@ where
             builder_signer: self.config.builder_signer,
             metrics: self.metrics.clone(),
             extra_ctx: Default::default(),
-            guarantor_client: Some(Arc::new(guarantor_client))
+            tog_client: Some(Arc::new(guarantor_client))
         };
 
         let builder = OpBuilder::new(best);
@@ -389,7 +409,9 @@ impl<Txs: PayloadTxsBounds> OpBuilder<'_, Txs> {
         // 4. if mem pool transactions are requested we execute them
 
         // gas reserved for builder tx
-        let message = format!("Block Number: {} W/ Expected Order: {}", ctx.block_number(), get_order(ctx))
+        let tog_client = ctx.tog_client.as_ref()
+                .ok_or(Error::Custom("Guarantor client not initialized".to_string())).unwrap();
+        let message = format!("Block Number: {} W/ Expected Order: {}", ctx.block_number(), get_order_from_tog(tog_client))
             .as_bytes()
             .to_vec();
         let builder_tx_gas = ctx
@@ -632,13 +654,54 @@ impl<Txs: PayloadTxsBounds> OpBuilder<'_, Txs> {
     }
 }
 
-fn get_order(ctx: &OpPayloadBuilderCtx) -> String {
+fn pull_txs_from_tog<Pool>(tog_client: &Arc<HttpClient>, pool: &Pool) 
+where
+    Pool: TransactionPool<Transaction: MaybeConditionalTransaction> + Send + Sync,
+{
+    let txs_result: Result<Vec<String>, Error> = task::block_in_place(|| {
+        Handle::current().block_on(async {
+            let raw_txs: Vec<String> = tog_client
+                .as_ref()
+                .request("tog_getRawTransactions", &[] as &[()])
+                .await?;
+
+            Ok(raw_txs)
+        })
+    });
+    let raw_txs = txs_result.unwrap();
+    let mut txs = Vec::new();
+    for rtx in raw_txs {
+        let raw_tx_str = rtx.strip_prefix("0x").unwrap_or(&rtx);
+        let decoded = match hex::decode(raw_tx_str) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("Invalid hex: {}", err);
+                continue;
+            }
+        };
+        let bytes = Bytes::from(decoded);
+        let recovered_tx = match recover_raw_transaction(&bytes) {
+            Ok(tx) => tx,
+            Err(err) => {
+                eprintln!("Failed to recover raw transaction: {:?}", err);
+                continue;
+            }
+        };
+        let tx: <Pool as TransactionPool>::Transaction =
+            <Pool as TransactionPool>::Transaction::from_pooled(recovered_tx);
+        txs.push(tx);
+    }
+    task::block_in_place(|| {
+        Handle::current().block_on(async {
+            pool.add_transactions(TransactionOrigin::Private, txs).await;
+        })
+    });
+}
+
+fn get_order_from_tog(tog_client: &Arc<HttpClient>) -> String {
     let hashes_result: Result<Vec<String>, Error> = task::block_in_place(|| {
         Handle::current().block_on(async {
-            let client = ctx.guarantor_client.as_ref()
-                .ok_or(Error::Custom("Guarantor client not initialized".to_string()))?;
-    
-            let tx_hashes: Vec<String> = client
+            let tx_hashes: Vec<String> = tog_client
                 .as_ref()
                 .request("tog_getBestTransactionHashes", &[] as &[()])
                 .await?;
@@ -649,4 +712,11 @@ fn get_order(ctx: &OpPayloadBuilderCtx) -> String {
     let hashes = hashes_result.unwrap();
     let joined_hashes = hashes.iter().join(", ");
     joined_hashes
+}
+
+fn get_tog_url() -> String {
+    let addr = env::var("TOG_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let port = env::var("TOG_PORT").unwrap_or_else(|_| "1545".to_string());
+    let url = format!("http://{}:{}", addr, port);
+    url
 }

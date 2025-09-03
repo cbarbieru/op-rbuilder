@@ -256,7 +256,7 @@ where
                 flashblock_index: Arc::new(AtomicU64::new(0)),
                 target_flashblock_count: self.config.flashblocks_per_block(),
             },
-            guarantor_client: None
+            tog_client: None
         };
 
         let state_provider = self.client.state_by_block_hash(ctx.parent().hash())?;

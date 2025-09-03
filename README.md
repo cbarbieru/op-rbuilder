@@ -2,12 +2,12 @@
 Added a command to start the builder separately, potentially needed for local testing
 ```bash
 cargo run -p op-rbuilder --bin op-rbuilder -- node \
-    --chain ~/Projects/SCEAL/builder-playground/storage/l2-genesis.json \
+    --chain <path_to_boostrap_resources>/l2-genesis.json \
     --http \
     --http.port 2222 \
     --authrpc.addr 0.0.0.0 \
     --authrpc.port 4444 \
-    --authrpc.jwtsecret ~/Projects/SCEAL/builder-playground/storage/jwtsecret \
+    --authrpc.jwtsecret <path_to_boostrap_resources>/jwtsecret \
     --datadir /tmp/builder --disable-discovery --port 30333 \
     --trusted-peers enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@127.0.0.1:30304
 ```

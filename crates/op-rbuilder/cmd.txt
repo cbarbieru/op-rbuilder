@@ -1,0 +1,11 @@
+go run main.go cook opstack --external-builder http://host.docker.internal:4444 --output ~/Projects/SCEAL/builder-playground-opstack-k8s/storage2
+
+cargo run -p op-rbuilder --bin op-rbuilder -- node \
+    --chain ~/.playground/devnet/l2-genesis.json \
+    --http \
+    --http.port 2222 \
+    --authrpc.addr 0.0.0.0 \
+    --authrpc.port 4444 \
+    --authrpc.jwtsecret ~/.playground/devnet/jwtsecret \
+    --datadir /tmp/builder --disable-discovery --port 30333 \
+    --trusted-peers enode://79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8@127.0.0.1:30304

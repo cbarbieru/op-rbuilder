@@ -192,13 +192,13 @@ where
             cancel: CancellationToken::new(),
         };
 
-        let hashes_before: Vec<FixedBytes<32>> = pool.best_transactions().into_iter().map(|tx| tx.hash().clone()).collect();
-        println!("hashes before pull = {:?}", &hashes_before);
+        // let hashes_before: Vec<FixedBytes<32>> = pool.best_transactions().into_iter().map(|tx| tx.hash().clone()).collect();
+        // println!("hashes before pull = {:?}", &hashes_before);
 
         pull_txs_from_tog(&self.tog_client, &pool);
         
-        let hashes_after_add: Vec<FixedBytes<32>> = pool.best_transactions().into_iter().map(|tx| tx.hash().clone()).collect();
-        println!("hashes after pull = {:?}", &hashes_after_add);
+        // let hashes_after_add: Vec<FixedBytes<32>> = pool.best_transactions().into_iter().map(|tx| tx.hash().clone()).collect();
+        // println!("hashes after pull = {:?}", &hashes_after_add);
         
         self.build_payload(args, |attrs| {
             #[allow(clippy::unit_arg)]
@@ -715,8 +715,9 @@ fn get_order_from_tog(tog_client: &Arc<HttpClient>) -> String {
 }
 
 fn get_tog_url() -> String {
-    let addr = env::var("TOG_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let host = env::var("TOG_HOST").unwrap_or_else(|_| "tx-order-guarantor".to_string());
     let port = env::var("TOG_PORT").unwrap_or_else(|_| "1545".to_string());
-    let url = format!("http://{}:{}", addr, port);
+    let url = format!("http://{}:{}", host, port);
+    println!("tog url = {}", url);
     url
 }
